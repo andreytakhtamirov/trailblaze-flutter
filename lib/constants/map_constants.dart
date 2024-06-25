@@ -45,6 +45,7 @@ const double kPanelFabHeight = kPanelMinContentHeight + 8;
 final double kFeatureItemHeight = kScreenHeight / 6;
 
 const double kDefaultMapZoom = 12;
+const double kNavigationMapZoom = 18;
 
 final CameraState kDefaultCameraState = CameraState(
     center: Point(coordinates: Position(-80.520852, 43.463355)),
@@ -154,4 +155,5 @@ enum ViewMode {
   directions,
   parks,
   shuffle,
+  navigation
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import 'package:polyline_codec/polyline_codec.dart';
 import 'package:trailblaze/constants/request_api_constants.dart';
+import 'package:trailblaze/data/instruction.dart';
 import 'package:trailblaze/extensions/polyline_codec_extension.dart';
 
 import '../constants/map_constants.dart';
@@ -23,6 +24,7 @@ class TrailblazeRoute {
   dynamic routeJson;
   List<dynamic> waypoints;
   List<List<num>>? coordinates;
+  List<Instruction>? instructions;
 
   TrailblazeRoute(
     this.sourceId,
@@ -66,6 +68,12 @@ class TrailblazeRoute {
           _getMetrics(routeJson['details']['surface'], coordinates!);
       highwayMetrics =
           _getMetrics(routeJson['details']['road_class'], coordinates!);
+
+      final instructionsJson = routeJson['instructions'] as List<dynamic>;
+      instructions = [];
+      for (dynamic iJson in instructionsJson) {
+        instructions?.add(Instruction(iJson, coordinates!));
+      }
     } else {
       coordinates =
           PolylineCodec.decode(geometry, precision: kMapboxRoutePrecision)

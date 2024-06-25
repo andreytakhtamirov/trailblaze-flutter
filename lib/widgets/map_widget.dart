@@ -2,8 +2,12 @@ import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
 
+import 'package:location/location.dart' as loc;
+import 'package:trailblaze/data/instruction.dart';
 import 'package:trailblaze/util/export_helper.dart';
 import 'package:trailblaze/util/format_helper.dart';
+import 'package:trailblaze/widgets/map/directions_widget.dart';
+import 'package:trailblaze/widgets/map/panels/navigation_panel.dart';
 import 'package:turf/turf.dart' as turf;
 import 'package:dartz/dartz.dart' as dartz;
 import 'package:flutter/material.dart';
@@ -62,6 +66,7 @@ class MapWidget extends StatefulWidget {
 class _MapWidgetState extends State<MapWidget>
     with AutomaticKeepAliveClientMixin<MapWidget> {
   late mbm.MapboxMap _mapboxMap;
+  loc.Location? location;
   MapBoxPlace? _selectedPlace;
   MapBoxPlace _startingLocation = MapBoxPlace(placeName: "My Location");
   String _selectedMode = kDefaultTransportationMode.value;
@@ -90,6 +95,7 @@ class _MapWidgetState extends State<MapWidget>
 
   bool _isOriginChanged = false;
   bool _isCameraLocked = false;
+  bool _isFollowingLocation = false;
   bool _isAvoidAnnotationClicked = false;
 
   List<double>? _currentOriginCoordinates;
@@ -146,6 +152,30 @@ class _MapWidgetState extends State<MapWidget>
         });
       }
     }
+  }
+
+  void _enableLocationTracking() async {
+    location = loc.Location();
+    location?.enableBackgroundMode(enable: true);
+    location?.onLocationChanged.listen((event) async {
+      if (!_isFollowingLocation) {
+        return;
+      }
+      final point = mbm.Point(
+          coordinates: mbm.Position(event.longitude!, event.latitude!));
+      final cameraOptions = mbm.CameraOptions(
+          center: point, zoom: kNavigationMapZoom, bearing: event.heading);
+      await _mapboxMap.easeTo(
+          cameraOptions, mbm.MapAnimationOptions(duration: 1500));
+    });
+  }
+
+  void _disableLocationTracking() {
+    setState(() {
+      _isFollowingLocation = false;
+    });
+    location?.enableBackgroundMode(enable: false);
+    location?.onLocationChanged.listen(null);
   }
 
   void _loadRouteToDisplay() async {
@@ -431,7 +461,7 @@ class _MapWidgetState extends State<MapWidget>
 
   void _setMapControlSettings() {
     Timer(const Duration(milliseconds: 300), () {
-      if (_isEditingAvoidArea) {
+      if (_isEditingAvoidArea || _viewMode == ViewMode.navigation) {
         _mapboxMap.scaleBar
             .updateSettings(mbm.ScaleBarSettings(enabled: false));
         _mapboxMap.compass.updateSettings(mbm.CompassSettings(enabled: false));
@@ -632,7 +662,7 @@ class _MapWidgetState extends State<MapWidget>
     bool isRoundTrip = waypoints.length == 1;
     final double? distance = isRoundTrip ? _selectedDistanceMeters : null;
 
-    _removeRouteLayers();
+    await _removeRouteLayers();
 
     setState(() {
       _isContentLoading = true;
@@ -821,13 +851,20 @@ class _MapWidgetState extends State<MapWidget>
         annotationHelper?.drawSingleAnnotation(point);
       }
     }
+
+    log(_selectedRoute!.coordinates!.toString());
+    for (Instruction? i in _selectedRoute!.instructions!) {
+      for (turf.Position p in i!.coordinates) {
+        annotationHelper?.drawStartAnnotation(p);
+      }
+    }
   }
 
-  void _removeRouteLayers() async {
+  Future<void> _removeRouteLayers() async {
     final copyList = [...routesList];
     routesList.clear();
     for (var route in copyList) {
-      _removeRouteLayer(route);
+      await _removeRouteLayer(route);
     }
   }
 
@@ -893,7 +930,9 @@ class _MapWidgetState extends State<MapWidget>
         left: 0,
         right: 0,
       ),
-      zoom: kDefaultCameraState.zoom,
+      zoom: _viewMode != ViewMode.navigation
+          ? kDefaultCameraState.zoom
+          : kNavigationMapZoom,
     );
   }
 
@@ -1039,6 +1078,10 @@ class _MapWidgetState extends State<MapWidget>
       return;
     }
 
+    if (_viewMode == ViewMode.navigation) {
+      return;
+    }
+
     if (_viewMode != ViewMode.directions) {
       await annotationHelper?.deletePointAnnotations();
     }
@@ -1126,14 +1169,21 @@ class _MapWidgetState extends State<MapWidget>
   }
 
   void _onMapScrollListener(mbm.MapContentGestureContext context) async {
+    // Parks panel should stay open even if scrolling the camera
+    if (_viewMode != ViewMode.parks) {
+      _togglePanel(false);
+    }
+
     if (_isCameraLocked) {
       setState(() {
         _isCameraLocked = false;
       });
     }
-    // Parks panel should stay open even if scrolling the camera
-    if (_viewMode != ViewMode.parks) {
-      _togglePanel(false);
+
+    if (_viewMode == ViewMode.navigation && _isFollowingLocation) {
+      setState(() {
+        _isFollowingLocation = false;
+      });
     }
   }
 
@@ -1147,12 +1197,16 @@ class _MapWidgetState extends State<MapWidget>
   }
 
   void _onDirectionsBackClicked() {
-    _setViewMode(_previousViewMode);
+    if (_previousViewMode != ViewMode.navigation) {
+      _setViewMode(_previousViewMode);
+    } else {
+      _setViewMode(ViewMode.search);
+    }
     setState(() {
       _selectedRoute = null;
       _fabHeight = kPanelFabHeight;
-      _removeRouteLayers();
     });
+    _removeRouteLayers();
 
     _setOriginToUserLocation();
     annotationHelper?.deleteCircleAnnotations();
@@ -1386,6 +1440,19 @@ class _MapWidgetState extends State<MapWidget>
     }
   }
 
+  Future<void> _toggleNavigationMode() async {
+    if (_viewMode == ViewMode.navigation) {
+      _disableLocationTracking();
+      await _setViewMode(ViewMode.directions);
+    } else {
+      _enableLocationTracking();
+      await _setViewMode(ViewMode.navigation);
+      setState(() {
+        _isFollowingLocation = true;
+      });
+    }
+  }
+
   void _onMapControlChanged(bool isEditingAvoidArea) {
     setState(() {
       _isEditingAvoidArea = isEditingAvoidArea;
@@ -1437,6 +1504,8 @@ class _MapWidgetState extends State<MapWidget>
             _viewMode == ViewMode.shuffle) &&
         _selectedRoute != null) {
       return kPanelRouteInfoMinHeight;
+    } else if (_viewMode == ViewMode.navigation) {
+      return kPanelRouteInfoMinHeight;
     } else {
       return kPanelMinContentHeight;
     }
@@ -1445,7 +1514,9 @@ class _MapWidgetState extends State<MapWidget>
   bool _isPanelBackdrop() {
     // In the directions view, the panel appears over
     //  top of the map thus not affecting padding.
-    return _viewMode == ViewMode.directions || _viewMode == ViewMode.shuffle;
+    return _viewMode == ViewMode.directions ||
+        _viewMode == ViewMode.shuffle ||
+        _viewMode == ViewMode.navigation;
   }
 
   bool _shouldShowDirectionsWidget() {
@@ -1453,7 +1524,8 @@ class _MapWidgetState extends State<MapWidget>
         (_viewMode == ViewMode.search ||
             _manuallySelectedPlace ||
             _viewMode == ViewMode.directions) &&
-        _viewMode != ViewMode.parks;
+        _viewMode != ViewMode.parks &&
+        _viewMode != ViewMode.navigation;
   }
 
   Future<void> _clearCameraPadding() async {
@@ -1486,11 +1558,14 @@ class _MapWidgetState extends State<MapWidget>
       });
     } else if (_previousViewMode == ViewMode.directions ||
         _previousViewMode == ViewMode.shuffle) {
-      _removeRouteLayers();
+      await _removeRouteLayers();
     }
 
     if (_viewMode == ViewMode.parks) {
       _updateFeatures();
+    } else if (_viewMode == ViewMode.navigation) {
+      _drawRoute(_selectedRoute!);
+      _goToUserLocation(isAnimated: true);
     }
 
     _updateDirectionsFabHeight(_panelController.panelPosition);
@@ -1502,13 +1577,16 @@ class _MapWidgetState extends State<MapWidget>
     super.build(context);
     final bool isParksButtonVisible = (widget.isInteractiveMap &&
             _viewMode != ViewMode.shuffle &&
+            _viewMode != ViewMode.navigation &&
             _viewMode != ViewMode.directions) ||
         _viewMode == ViewMode.parks;
     final bool isShuffleButtonVisible = (widget.isInteractiveMap &&
         _viewMode != ViewMode.shuffle &&
+        _viewMode != ViewMode.navigation &&
         _viewMode != ViewMode.directions);
     final bool isDirectionsButtonVisible = _viewMode != ViewMode.directions &&
         _viewMode != ViewMode.shuffle &&
+        _viewMode != ViewMode.navigation &&
         _selectedPlace != null &&
         !_isOriginChanged;
     final bool isRefreshButtonVisible =
@@ -1516,6 +1594,10 @@ class _MapWidgetState extends State<MapWidget>
 
     final bool shouldShowShuffleWidget =
         widget.isInteractiveMap && _viewMode == ViewMode.shuffle;
+
+    final bool shouldShowNavigationWidget = widget.isInteractiveMap &&
+        _viewMode == ViewMode.navigation &&
+        _selectedRoute != null;
 
     final nonStaticBottomOffset = _getBottomOffset(wantStatic: false);
 
@@ -1674,6 +1756,8 @@ class _MapWidgetState extends State<MapWidget>
                               _showDirectionsWidget()
                             else if (shouldShowShuffleWidget)
                               _showShuffleWidget()
+                            else if (shouldShowNavigationWidget)
+                              _showNavigationWidget()
                             else
                               const SizedBox(),
                             SizedBox(
@@ -1747,8 +1831,10 @@ class _MapWidgetState extends State<MapWidget>
                                       ),
                                     ),
                                     Visibility(
-                                      visible: _selectedRoute != null &&
-                                          !_isCameraLocked,
+                                      visible:
+                                          _viewMode == ViewMode.directions &&
+                                              _selectedRoute != null &&
+                                              !_isCameraLocked,
                                       child: Padding(
                                         padding: const EdgeInsets.fromLTRB(
                                             16, 8, 16, 0),
@@ -1836,7 +1922,7 @@ class _MapWidgetState extends State<MapWidget>
                 foregroundColor: Theme.of(context).colorScheme.onPrimary,
               ),
             ),
-          if (_selectedRoute != null)
+          if (_selectedRoute != null && _viewMode == ViewMode.directions)
             Positioned(
               right: 4,
               bottom: _panelOptionsHeight - 10,
@@ -1853,6 +1939,32 @@ class _MapWidgetState extends State<MapWidget>
                     )
                   ];
                 },
+              ),
+            ),
+          if (_viewMode == ViewMode.navigation && !_isFollowingLocation)
+            Positioned(
+              left: 8,
+              bottom: _panelOptionsHeight + 80,
+              child: IconButtonSmall(
+                icon: Icons.navigation_outlined,
+                foregroundColor: Theme.of(context).colorScheme.primary,
+                text: 'Follow',
+                onTap: () {
+                  _enableLocationTracking();
+                  setState(() {
+                    _isFollowingLocation = true;
+                  });
+                },
+              ),
+            ),
+          if (_selectedRoute != null && _viewMode != ViewMode.navigation)
+            Positioned(
+              left: 4,
+              bottom: _panelOptionsHeight - 10,
+              child: IconButtonSmall(
+                text: "Go",
+                icon: Icons.navigation,
+                onTap: _toggleNavigationMode,
               ),
             ),
         ],
@@ -1912,6 +2024,14 @@ class _MapWidgetState extends State<MapWidget>
     );
   }
 
+  Widget _showNavigationWidget() {
+    return Padding(
+      key: _topWidgetKey,
+      padding: const EdgeInsets.all(8.0),
+      child: DirectionsWidget(_selectedRoute!),
+    );
+  }
+
   List<Widget> _panels(bool panel) {
     List<Widget>? panels;
 
@@ -1930,6 +2050,11 @@ class _MapWidgetState extends State<MapWidget>
           )
         ];
         break;
+      case ViewMode.navigation:
+        panels = [
+          PanelWidgets.panelGrabber(),
+          NavigationPanel(route: _selectedRoute, onExit: _toggleNavigationMode),
+        ];
       default:
         if (_selectedRoute != null) {
           panels = [

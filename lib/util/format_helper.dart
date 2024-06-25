@@ -26,7 +26,21 @@ class FormatHelper {
     return "${(distance != null ? distance / 1000 : 0).toStringAsFixed(!noRemainder ? 2 : 0)} km";
   }
 
-  static String formatSquareDistance(num? distance, {bool noRemainder = false}) {
+  static String formatDistancePrecise(num? distance,
+      {bool noRemainder = false}) {
+    if (distance == null || distance == 0) {
+      return "0 m";
+    }
+
+    if (distance < 1000) {
+      return "${distance.toStringAsFixed(0)} m";
+    } else {
+      return "${(distance / 1000).toStringAsFixed(!noRemainder ? 2 : 0)} km";
+    }
+  }
+
+  static String formatSquareDistance(num? distance,
+      {bool noRemainder = false}) {
     return "${(distance != null ? distance / 1e6 : 0).toStringAsFixed(!noRemainder ? 2 : 0)} km\u00B2";
   }
 
